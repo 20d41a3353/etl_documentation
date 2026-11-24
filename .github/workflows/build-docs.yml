@@ -64,16 +64,21 @@ jobs:
           from unittest.mock import MagicMock
           import pyspark, pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
 
-          # 1. SparkSession mock (collect -> date, first/head -> int)
-          sample_date = datetime.date(2026, 1, 1)
+          # 1. Hybrid Date+Int object (works both as datetime.date and int())
+          class DateAndInt(datetime.date):
+              def __int__(self):
+                  return 1
+
+          sample_val = DateAndInt(2026, 1, 1)
+
           class SmartSparkMock(MagicMock):
               def _get_child_mock(self, **kw):
                   m = super()._get_child_mock(**kw)
                   name = kw.get('name', '')
                   if name == 'collect':
-                      m.return_value = [[sample_date]]
+                      m.return_value = [[sample_val]]
                   elif name in ('first', 'head'):
-                      m.return_value = [1]
+                      m.return_value = [sample_val]
                   return m
 
           pyspark.sql.SparkSession.builder = SmartSparkMock()
@@ -115,6 +120,7 @@ jobs:
 
           pdoc.__main__.cli()
           " ./Scripts ./common -o ./_site
+
 
 
 
