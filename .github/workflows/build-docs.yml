@@ -38,10 +38,11 @@ jobs:
         run: |
           python -c "
           from unittest.mock import MagicMock
-          import pyspark.sql, datetime, os, builtins
+          import pyspark.sql, datetime, os, builtins, py4j.java_gateway
 
-          # 1. SparkSession mock
+          # 1. SparkSession & Py4J Java gateway mock
           pyspark.sql.SparkSession.builder = MagicMock()
+          py4j.java_gateway.java_import = MagicMock()
 
           # 2. datetime.strptime mock
           class FakeDateTime(datetime.datetime):
@@ -50,7 +51,7 @@ jobs:
                   return datetime.datetime(2026, 1, 1)
           datetime.datetime = FakeDateTime
 
-          # 3. /app lanti folder creation & log file writing mock
+          # 3. /app folder creation & log file writing mock
           orig_makedirs = os.makedirs
           def safe_makedirs(name, *args, **kwargs):
               if str(name).startswith('/app'):
@@ -68,6 +69,7 @@ jobs:
           from pdoc.__main__ import cli
           cli()
           " ./Scripts ./common -o ./_site
+
 
 
 
