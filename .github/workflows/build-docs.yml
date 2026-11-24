@@ -38,11 +38,17 @@ jobs:
         run: |
           python -c "
           from unittest.mock import MagicMock
-          import pyspark.sql
+          import pyspark.sql, datetime
           pyspark.sql.SparkSession.builder = MagicMock()
+          class FakeDateTime(datetime.datetime):
+              @classmethod
+              def strptime(cls, date_string, format):
+                  return datetime.datetime(2026, 1, 1)
+          datetime.datetime = FakeDateTime
           from pdoc.__main__ import cli
           cli()
           " ./Scripts ./common -o ./_site
+
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
