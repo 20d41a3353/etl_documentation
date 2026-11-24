@@ -43,7 +43,7 @@ jobs:
         run: |
           python -c "
           from unittest.mock import MagicMock
-          import pyspark.sql, datetime, os, builtins, py4j.java_gateway
+          import pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
 
           # 1. SparkSession & Py4J Java gateway mock
           pyspark.sql.SparkSession.builder = MagicMock()
@@ -71,9 +71,18 @@ jobs:
               return orig_open(file, mode, *args, **kwargs)
           builtins.open = safe_open
 
-          from pdoc.__main__ import cli
-          cli()
+          # 4. Script sys.argv arguments mock (pdoc arguments parse chesaka override chestham)
+          import pdoc.__main__, argparse
+          orig_parse = argparse.ArgumentParser.parse_args
+          def custom_parse(self, args=None, namespace=None):
+              res = orig_parse(self, args, namespace)
+              sys.argv = ['script.py', '1', '2026-01-01', '1', '1', '1', '1']
+              return res
+          argparse.ArgumentParser.parse_args = custom_parse
+
+          pdoc.__main__.cli()
           " ./Scripts ./common -o ./_site
+
 
 
 
