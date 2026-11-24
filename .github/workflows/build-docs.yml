@@ -32,6 +32,7 @@ jobs:
           pip install pdoc pyspark delta-spark confluent-kafka pylint
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+
       - name: Auto-generate Dependency, Data-Flow & UML Diagrams
         env:
           PYTHONPATH: .
@@ -45,7 +46,6 @@ jobs:
           from pathlib import Path
 
           scripts_dir = Path("Scripts")
-          common_dir = Path("common")
 
           dep_edges = set()
           io_edges = set()
@@ -86,7 +86,9 @@ jobs:
                   io_edges.add(f"    {mod_name}[{mod_name}] -->|Write| TGT_{clean_w}[(\"{w}\")]")
 
               funcs = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
-              script_summaries.append(f"| `{py_file.name}` | {\", \".join(sorted(used_commons)) or \"-\"} | {\", \".join(funcs) or \"Top-level ETL\"} |")
+              commons_str = ", ".join(sorted(used_commons)) or "-"
+              funcs_str = ", ".join(funcs) or "Top-level ETL"
+              script_summaries.append(f"| `{py_file.name}` | {commons_str} | {funcs_str} |")
 
           uml_classes = Path("classes_ETL_Project.mmd").read_text(encoding="utf-8") if Path("classes_ETL_Project.mmd").exists() else ""
 
