@@ -65,25 +65,16 @@ jobs:
           from unittest.mock import MagicMock
           import pyspark, pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
 
-          # 1. SparkSession mock (DataFrame collect/first/head returns valid date string)
-          mock_spark = MagicMock()
-          mock_df = mock_spark.builder.appName.return_value.config.return_value.getOrCreate.return_value
-          for target in (mock_spark.builder.getOrCreate.return_value, mock_spark.builder.appName.return_value.getOrCreate.return_value, mock_spark.builder.appName.return_value.enableHiveSupport.return_value.getOrCreate.return_value):
-              target.sql.return_value.collect.return_value = [['2026-01-01']]
-              target.sql.return_value.first.return_value = ['2026-01-01']
-              target.sql.return_value.head.return_value = ['2026-01-01']
-              target.read.format.return_value.load.return_value.collect.return_value = [['2026-01-01']]
-              target.read.format.return_value.load.return_value.first.return_value = ['2026-01-01']
-
-          # Generic fallback for any chained Spark builder calls
+          # 1. SparkSession mock (collect/first/head returns datetime.date(2026, 1, 1))
+          sample_date = datetime.date(2026, 1, 1)
           class SmartSparkMock(MagicMock):
               def _get_child_mock(self, **kw):
                   m = super()._get_child_mock(**kw)
                   name = kw.get('name', '')
                   if name == 'collect':
-                      m.return_value = [['2026-01-01']]
+                      m.return_value = [[sample_date]]
                   elif name in ('first', 'head'):
-                      m.return_value = ['2026-01-01']
+                      m.return_value = [sample_date]
                   return m
 
           pyspark.sql.SparkSession.builder = SmartSparkMock()
@@ -125,6 +116,7 @@ jobs:
 
           pdoc.__main__.cli()
           " ./Scripts ./common -o ./_site
+
 
 
 
