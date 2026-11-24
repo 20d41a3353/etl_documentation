@@ -56,7 +56,6 @@ jobs:
 
 
 
-
       - name: Build HTML documentation
         env:
           PYTHONPATH: .
@@ -65,7 +64,7 @@ jobs:
           from unittest.mock import MagicMock
           import pyspark, pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
 
-          # 1. SparkSession mock (collect/first/head returns datetime.date(2026, 1, 1))
+          # 1. SparkSession mock (collect -> date, first/head -> int)
           sample_date = datetime.date(2026, 1, 1)
           class SmartSparkMock(MagicMock):
               def _get_child_mock(self, **kw):
@@ -74,7 +73,7 @@ jobs:
                   if name == 'collect':
                       m.return_value = [[sample_date]]
                   elif name in ('first', 'head'):
-                      m.return_value = [sample_date]
+                      m.return_value = [1]
                   return m
 
           pyspark.sql.SparkSession.builder = SmartSparkMock()
