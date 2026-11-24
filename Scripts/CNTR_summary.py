@@ -1,0 +1,91 @@
+from pyspark.sql import SparkSession, functions as F, types as T
+from pyspark.sql.functions import col, lit, current_timestamp, coalesce, when, substring, expr,concat, to_date,count ,to_json ,struct
+from pyspark.sql.functions import collect_list, struct, to_json, sum , broadcast
+import traceback
+import sys
+from datetime import date,timedelta
+from pyspark.sql.functions import desc
+# =========== Common Methods =============================
+import common.constants  as constants
+from common.properties import get_oracle_properties,get_jdbc_url
+from common.dateUtil import get_etl_date
+from common.processRun import get_process_run_id
+from common.log_etl_modified import log_etl
+from common.read_write_oracle import read_oracle
+from common.fileUtil import tables_to_read
+from common.cgl_suspense_tracker import suspense_track
+from common.fileUtil import get_hdfs_base
+
+INSERT=0
+UPDATE=1
+
+def main(args):
+    
+    try:
+         BASE_HDFS = get_hdfs_base()
+         spark = (SparkSession.builder.appName("CNTR_SUMMARY_COUNT_SCRIPT").getOrCreate())        
+        
+         oracle_properties=get_oracle_properties()
+
+         oracle_tables = tables_to_read("glif")
+         TRANSACTIONS = oracle_tables["TRANSACTIONS"]
+         BALANCE = oracle_tables["BALANCE"]
+
+         today = get_etl_date(spark)
+         run_date= today.strftime("%d-%m-%Y")
+         PROCESS_ID= getattr(constants,"DIFFERENCE_PIPELINE_ID",3)
+         process_run_id = sys.argv[1] if len(sys.argv) > 1 else get_process_run_id(spark,PROCESS_ID,run_date)
+         print(f"Process RunId: {process_run_id}")         
+        
+         print(today)
+         print(run_date)
+         log_etl(spark,process_run_id,"cntr_summary_started",1,"generating cntr_summary.")
+         
+         query = f"""(select cgl, currency,count(1) as count
+                        from {BALANCE} 
+                        WHERE cgl IN ('1260505001', '1260505003', '1111111111') and 
+                        BALANCE_DATE= TO_DATE('{run_date}', 'DD-MM-YYYY') and BALANCE <> 0  
+                        group by  cgl, currency) t"""
+
+         jdbc_url = get_jdbc_url()
+         oracle_properties = get_oracle_properties()
+        #  result_df = spark.read.jdbc(url=jdbc_url, table=query, properties=oracle_properties)
+         result_df = read_oracle(spark,query)
+         summary_df = result_df.select(collect_list(
+                                           struct("cgl", "currency", "count")
+                                       ).alias("summary"))
+         
+         final_df = summary_df.select(lit("CNTR Summary").alias("Summary Name"),
+                                       lit(run_date).alias("date"),
+                                       "summary")
+         
+         final_json = final_df.selectExpr("to_json(struct(*)) AS value").first()["value"]
+
+         log_etl(spark,process_run_id,"cntr_summary_calculated",2,"cntr Summary Succesfully Calculated",0,final_json)
+         log_etl(spark,process_run_id,"cntr_summary_started",2,"cntr_summary generation completed.")
+         print(final_json)
+         try:
+             suspense_track(spark,BASE_HDFS,today)
+         except Exception as e:
+             print(f"Error {e} occured while executing suspense tracker activity.")
+         
+         
+         spark.stop()
+         sys.exit(0)
+
+         
+        
+    except Exception as e:
+        print("ERROR during reconciliation:")
+        log_etl(spark,process_run_id,"cntr_summary_calculated",3,"Error while calculating cntr_Summary.")
+        log_etl(spark,process_run_id,"cntr_summary_started",3,"Error while generating cntr_summary.")
+        traceback.print_exc()
+        try:
+            spark.stop()
+        except:
+            pass
+        sys.exit(1)
+        
+
+if __name__=="__main__":
+    main(sys.argv)

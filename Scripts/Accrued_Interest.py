@@ -1,0 +1,414 @@
+import datetime 
+from pyspark.sql import SparkSession , functions as F
+import pyspark.sql.types as T
+from pyspark.sql.functions import col, substring, when, round as spark_round, coalesce, lit
+from pyspark.sql.types import StructType, StructField, StringType, IntegerType, DateType
+from pyspark.sql.functions import  to_date,expr, round, lower, col,when, length, count, substring,trim, concat, lit, create_map, to_timestamp, sum,broadcast, coalesce,current_timestamp, first
+from pyspark.sql.types import DecimalType, StringType, StructType, StructField, LongType, DateType, TimestampType
+from datetime import date, timedelta , datetime
+from pyspark.sql.functions import desc
+import sys
+from py4j.java_gateway import java_import
+from delta.tables import DeltaTable 
+import concurrent.futures
+import builtins
+from pyspark.sql import Row
+
+from common.processRun import get_process_run_id
+from common.constants import Process
+from common.log_etl_modified import log_etl
+
+
+import re   
+# =========== Common Methods =============================
+
+from common.properties import get_oracle_properties
+from common.dateUtil import get_etl_date
+from common.createSpark import create_spark_session
+from common.fileUtil import get_hdfs_base, write_csv_with_filename
+from common.create_path_if_not_exists import create_path_if_not_exists
+
+
+
+oracle_properties = get_oracle_properties()
+
+oracle_url = oracle_properties["url"]
+oracle_user = oracle_properties["user"]
+oracle_password = oracle_properties["password"]
+oracle_driver = oracle_properties["driver"]
+
+
+def read_oracle(spark, query_or_table):
+    """Reads a table or query from Oracle DB using JDBC."""
+    try:
+        dbtable_val = f"({query_or_table}) src" if " " in query_or_table.strip() else query_or_table
+        
+        return spark.read.format("jdbc") \
+            .option("url", oracle_url) \
+            .option("dbtable", dbtable_val) \
+            .option("user", oracle_user) \
+            .option("password", oracle_password) \
+            .option("driver", oracle_driver) \
+            .option("fetchsize" , "10000") \
+            .load()
+    except Exception as e:
+        print("Oracle read error:", str(e))
+        raise e
+
+def main(spark,hdfs,etl_date,process_run_id):
+    try:
+        log_etl(spark,process_run_id,"Consolidated_deposits_file_reading",1)
+        date_str=etl_date.strftime("%Y-%m-%d")
+        date_var=etl_date.strftime("%d-%m-%Y")
+        file_date = etl_date.strftime('%Y%m%d')
+        print(date_str)
+        date_obj = datetime.strptime(date_var, "%d-%m-%Y")   
+        print(date_obj)
+        output_date = date_obj.strftime("%d-%b-%y").upper()
+
+        print(output_date)
+        # path = f"{hdfs}/CONSOLIDATED-DEPOSITS-FILES/{date_str}/CON*"
+        path = f"{hdfs}/CBS-FILES/{date_var}/misc/CON*"
+        # dev path = f"{hdfs}/raasheed/CON*"
+        
+
+        output_path =  f"{hdfs}/reports/{date_str}/CONSOLIDATED-DEPOSITS-FILES/"
+        # output_path =  f"file:///app/reports/{date_str}/"
+
+    
+
+        
+        raw_df =  spark.read.option("header", "false").csv(path) \
+            .toDF("glcc", "amount")
+        
+        # raw_df.show(10,False)
+        raw_count = raw_df.count()
+
+        log_etl(spark,process_run_id,"Consolidated_deposits_file_reading",2)
+
+
+    except Exception as e:
+        print(f"error{e} occured")
+        log_etl(spark,process_run_id,"Consolidated_deposits_file_reading",3,f"error_message : {e}")
+        spark.stop()
+        sys.exit(1)
+
+    try:
+
+        log_etl(spark,process_run_id,"Value_Validation_and_Calculation ",1)
+        parsed_df = raw_df.withColumn("branch_code", F.substring(F.col("glcc"), 1, 5)) \
+                        .withColumn("currency_code", F.substring(F.col("glcc"), 6, 3)) \
+                        .withColumn("cgl", F.substring(F.col("glcc"), 9, 10)) \
+                        .withColumn("segment_code", F.substring(F.col("glcc"), 13, 4)) \
+                        .withColumn("amount", F.col("amount").cast("decimal(18, 4)"))
+
+
+
+        branch_master   = read_oracle(spark, "SELECT CODE AS BRANCH_CODE FROM BRANCH_MASTER")
+        cgl_master      = read_oracle(spark, "SELECT CGL_NUMBER AS cgl FROM CGL_MASTER")
+        currency_master = read_oracle(spark, "SELECT CURRENCY_CODE, CURRENCY_RATE FROM CURRENCY_MASTER")
+        
+        
+
+        validated_df = parsed_df \
+            .join(F.broadcast(branch_master), on="branch_code", how="inner") \
+            .join(F.broadcast(cgl_master), on="cgl", how="inner") \
+            .join(F.broadcast(currency_master), on="currency_code", how="left")
+        
+        result_df = validated_df.withColumn(
+            "effective_rate",
+            F.when(F.col("currency_code") == "INR", F.lit(1.0)).otherwise(F.coalesce(F.col("currency_rate"), F.lit(1.0)))
+        ).withColumn(
+            "final_amount",
+            F.round(F.col("amount") * F.col("effective_rate"), 2)
+        )
+        result_df = result_df.cache()
+
+        # result_df.show(10,False)
+
+        accr_int_heads  = read_oracle(spark, "SELECT HEAD_CODE, FLAG FROM ACCR_INT_HEADS")
+        rb_parsed_table = read_oracle(spark, "SELECT HEAD_CODE , HEAD_DESC,CGL AS cgl FROM RB_PARSED_TEMPLATE")
+        gl_balance_table = read_oracle(spark, f"SELECT CGL , INR_BALANCE FROM GL_BALANCE WHERE BALANCE_DATE ='{output_date}' and CGL  LIKE '5%'") 
+        # gl_balance_table.show(100,False)
+    
+        
+        head_cgl_map = F.broadcast(accr_int_heads).join(rb_parsed_table, on="HEAD_CODE", how="inner")
+        head_cgl_map.show(10,False)
+        head_cgl_map = head_cgl_map.cache()
+        
+        head_df = head_cgl_map.select("HEAD_CODE","FLAG","HEAD_DESC").distinct()
+
+        head_df = head_df.cache()
+        file_balance_df = head_cgl_map.join(result_df, on="cgl", how="inner") \
+            .groupBy("HEAD_CODE") \
+            .agg(F.sum("final_amount").alias("file_balance"))
+        result_df.count()
+
+        # file_balance_df.show(100,False)
+
+        # gl_memo_df = head_cgl_map.filter(F.col("cgl").startswith("5")) \
+        gl_memo_df = head_cgl_map \
+            .join(gl_balance_table, on="cgl", how="inner") \
+            .groupBy("HEAD_CODE") \
+            .agg(F.sum("INR_BALANCE").alias("memo_balance"))
+        # gl_memo_df.show(10,False)
+        print("update ")
+    
+        final_summary_df = head_df \
+            .join(file_balance_df, on="HEAD_CODE", how="left") \
+            .join(gl_memo_df, on="HEAD_CODE", how="left") \
+            .withColumn("file_balance", F.coalesce(F.col("file_balance"), F.lit(0.0))) \
+            .withColumn("memo_balance", F.coalesce(F.col("memo_balance"), F.lit(0.0))) \
+            .withColumn(
+                "total_balance",
+                F.when(F.col("FLAG") == "Y", F.col("file_balance") - F.col("memo_balance"))
+                .otherwise(F.col("file_balance"))
+            ) \
+            .filter(F.col("total_balance") != 0)  # <-- Keeps only non-zero rows
+        print("ssup")
+        # final_summary_df.show(10,False)
+        
+        log_etl(spark,process_run_id,"Value_Validation_and_Calculation ",2)
+
+    except Exception as e:
+        print(f"error{e} occured")
+        log_etl(spark,process_run_id,"Value_Validation_and_Calculation ",3,f"error_message : {e}")
+        spark.stop()
+        sys.exit(1)
+
+    try:
+        log_etl(spark,process_run_id," Main_Report_generation",1)
+  
+        # 1. Output Pipe-Separated File (PSV)
+        psv_export_df = final_summary_df.orderBy(F.col("HEAD_CODE").asc()).select(
+            F.col("HEAD_CODE").alias("NWSA_HEAD"),
+            F.col("HEAD_DESC").alias("DESCRIPTION"),
+            F.format_string("%.2f", F.col("total_balance")).alias("AMOUNT")
+        ).orderBy(col("HEAD_CODE").asc())
+        
+        # psv_export_df.show(10,False)
+        # spark.stop()
+        # sys.exit()
+
+        create_path_if_not_exists(spark,output_path)
+        print("psv file creation")
+        
+        filename = f"ACCR_INT_FILE_FINCORE_{file_date}.psv"
+
+        write_csv_with_filename(
+            df=psv_export_df,
+            output_dir=output_path,
+            filename=filename,
+            header=True,
+            sep="|"
+        )
+        print("completed")
+        # log_etl(spark,process_run_id,"Accrued interest PSV file created",1)
+
+    
+        as_on_date = date_str
+        run_date = etl_date.strftime("%d%m%Y")
+        rows = final_summary_df.select("HEAD_CODE", "HEAD_DESC", "total_balance").collect()
+        
+        header_lines = [
+            f"'{' '*48}STATE BANK OF INDIA\n",
+            f"{' '*49}000  INDIAN RUPEE\n",
+            f"     REPORT ON DAILY  ACCRUED INTEREST ON DEPOSIT (NDTL) AS ON  {as_on_date}{' '*8}RUN DATE:{run_date}\n\n",
+            "=" * 100 + "\n",
+            f"{'NWSA HEAD':<21}{'DESCRIPTION':<55}{'AMOUNT':>24}\n",
+            "=" * 100 + "\n"
+        ]
+        
+        body_lines = [
+            f"{str(r['HEAD_CODE'] or ''):<21}{str(r['HEAD_DESC'] or ''):<55}{float(r['total_balance'] or 0.0):>24.2f}\n"
+            for r in rows
+        ]
+        
+        report_df = spark.createDataFrame(
+            [("".join(header_lines) + "".join(body_lines) + "=" * 100 + "\n",)],
+            ["value"]
+        )
+        
+        write_csv_with_filename(
+            df=report_df,
+            output_dir=output_path,
+            filename=f"ACCR_INT_REPORT_{file_date}.txt",
+            header=False
+        )
+        print("completed")
+        log_etl(spark,process_run_id,"Main_Report_generation",2)
+
+    except Exception as e :
+        print(f"error{e} occured")
+        log_etl(spark,process_run_id,"Main_Report_generation",3,f"error_message : {e}")
+        spark.stop()
+        sys.exit(1)
+
+
+        # -------------------------------------------------------------------------
+        # INTERBANK REPORT PIPELINE
+        # -------------------------------------------------------------------------
+
+    try:
+
+        
+        log_etl(spark,process_run_id,"Value_Validation_and_Calculation_Interbank",1)
+
+        accr_int_interbank = read_oracle(spark, "ACCR_INT_INTERBANK")
+        
+        # interbank_segments = accr_int_interbank.select("segment_code").distinct()
+        interbank_result_df = result_df.join(
+            accr_int_interbank.select(F.col("SEGMENT_CODE").alias("segment_code")),
+            on="segment_code",
+            how="inner"
+        )
+        # interbank_result_df.show(10,False)
+        
+        interbank_file_balance_df = head_cgl_map.join(interbank_result_df, on="cgl", how="inner") \
+            .groupBy("HEAD_CODE") \
+            .agg(F.sum("final_amount").alias("file_balance"))
+        
+        # interbank_file_balance_df.show(100,False)
+
+        interbank_memo_cgl_map = head_cgl_map.filter(F.col("cgl").startswith("5")) \
+        .withColumn("segment_code", F.substring(F.col("cgl"), 5, 4)) \
+        .join(
+            accr_int_interbank,
+            on="segment_code",
+            how="inner"
+        ) \
+        .select("HEAD_CODE", "cgl") \
+        .distinct()
+
+
+        # interbank_memo_cgl_map.show(10,False)
+
+        interbank_gl_memo_df = interbank_memo_cgl_map \
+        .join(gl_balance_table, on="cgl", how="inner") \
+        .groupBy("HEAD_CODE") \
+        .agg(F.sum("INR_BALANCE").alias("memo_balance"))
+
+        
+
+        interbank_summary_df = head_df \
+        .join(interbank_file_balance_df, on="HEAD_CODE", how="inner") \
+        .join(interbank_gl_memo_df, on="HEAD_CODE", how="left") \
+        .withColumn("file_balance", F.coalesce(F.col("file_balance"), F.lit(0.0))) \
+        .withColumn("memo_balance", F.coalesce(F.col("memo_balance"), F.lit(0.0))) \
+        .withColumn(
+            "total_balance",
+            F.when(F.col("FLAG") == "Y", F.col("file_balance") - F.col("memo_balance"))
+            .otherwise(F.col("file_balance"))
+        ) \
+            .filter(F.col("total_balance") != 0)
+        # interbank_summary_df.show(10,False)
+        
+
+
+        
+        interbank_psv_df = interbank_summary_df.orderBy(F.col("HEAD_CODE").asc()).select(
+            F.col("HEAD_CODE").alias("NWSA_HEAD"),
+            F.col("HEAD_DESC").alias("DESCRIPTION"),
+            F.format_string("%.2f", F.col("total_balance")).alias("AMOUNT")
+        ).sort(col("HEAD_CODE"))
+        
+        log_etl(spark,process_run_id,"Value_Validation_and_Calculation_Interbank",2)
+
+
+
+    except Exception as e   :
+        print(f"error{e} occured")
+        log_etl(spark,process_run_id,"Value_Validation_and_Calculation_Interbank",3,f"error_message : {e}") 
+        spark.stop()
+        sys.exit(1)
+
+    try:
+        
+        log_etl(spark,process_run_id,"Interbank_Report_generation",1)
+
+        filename_interbank = f"ACCR_INT_FILE_INTERBANK_{file_date}.psv"
+
+        write_csv_with_filename(
+            df=interbank_psv_df,
+            output_dir=output_path,
+            filename=filename_interbank,
+            header=True,
+            sep="|"
+        )
+        
+        
+        interbank_rows = interbank_summary_df.orderBy(F.col("HEAD_CODE").asc()).select("HEAD_CODE", "HEAD_DESC", "total_balance").collect()
+
+
+        interbank_header_lines = [
+            f"'{' '*48}STATE BANK OF INDIA\n",
+            f"{' '*49}000  INDIAN RUPEE\n",
+            f"  REPORT ON DAILY  ACCRUED INTEREST ON INTERBANK DEPOSIT AS ON  {as_on_date}{' '*8}RUN DATE : {run_date}\n\n",
+            "=" * 100 + "\n",
+            f"{'NWSA HEAD':<21}{'DESCRIPTION':<55}{'AMOUNT':>24}\n",
+            "=" * 100 + "\n"
+        ]
+        
+        interbank_body_lines = [
+            f"{str(r['HEAD_CODE'] or ''):<21}{str(r['HEAD_DESC'] or ''):<55}{float(r['total_balance'] or 0.0):>24.2f}\n"
+            for r in interbank_rows
+        ]
+        
+        interbank_report_df = spark.createDataFrame(
+            [("".join(interbank_header_lines) + "".join(interbank_body_lines) + "=" * 100 + "\n",)],
+            ["value"]
+        )
+        
+        write_csv_with_filename(
+            df=interbank_report_df,
+            output_dir=output_path,
+            filename=f"ACCR_INT_REPORT_INTERBANK{file_date}.txt",
+            header=False
+        )
+        log_etl(spark,process_run_id,"Interbank_Report_generation",2)
+
+    except Exception as e :
+        print(f"error{e} occured")
+        log_etl(spark,process_run_id,"Interbank_Report_generation",3,f"error_message : {e}")
+        spark.stop()
+        sys.exit(1)
+
+
+
+if __name__ == "__main__":
+
+
+
+
+
+
+
+    PROCESS_ID = Process.ACCRUED_INTEREST
+    BASE_HDFS = get_hdfs_base()
+    spark = create_spark_session("accrued_int", BASE_HDFS)
+    etl_date = get_etl_date(spark)
+    # etl_date = datetime(2026,9,1).date()
+    posting_date_str = etl_date.strftime("%Y-%m-%d")
+    process_run_id = sys.argv[1] if len(sys.argv) > 1 else get_process_run_id(spark,PROCESS_ID,posting_date_str)
+
+    print(f"process Run Id --------> {process_run_id}")
+    
+    
+    
+    try:
+        log_etl(spark,process_run_id,"accrued_interest_started",1)
+
+        main(spark,BASE_HDFS,etl_date,process_run_id)
+
+        log_etl(spark,process_run_id,"accrued_interest_started",2)
+    except Exception as e:
+        error_message = str(e)
+        log_etl(spark,process_run_id,"accrued_interest_started",3,error_message)
+        raise
+
+    finally:
+        try:
+            spark.stop()
+            sys.exit(0)
+        except:
+            pass

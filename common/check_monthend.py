@@ -1,0 +1,162 @@
+
+
+import datetime 
+from pyspark.sql import SparkSession , functions as F
+import pyspark.sql.types as T
+from pyspark.sql.functions import to_date,expr, col,when, length, substring,trim, concat, lit, create_map, to_timestamp, sum,broadcast, coalesce
+from datetime import date, timedelta
+
+# =========== Common Methods =============================
+     
+from common.dateUtil import get_etl_date
+from common.processRun import get_run_id
+from common.createSpark import create_spark_session
+from common.fileUtil import get_hdfs_base
+
+def check_MonthEnd():
+      HDFS_BASE = get_hdfs_base()
+      spark = create_spark_session("GLIF_PIPELINE", HDFS_BASE)
+      today = get_etl_date(spark)
+      
+      
+
+
+      if isinstance(today, datetime.datetime):
+         today = today.date()
+         data = [(today,)]
+         columns = ["some_date"]
+         schema = T.StructType([
+            T.StructField("some_date", T.DateType(), True)
+         ])
+
+         df = spark.createDataFrame(data, schema=schema)
+         
+
+         df_result = df.withColumn("month_end_date", F.last_day(F.col("some_date"))).withColumn("monthend_True", col("some_date") == col("month_end_date"))
+
+         df_result = df_result.select("monthend_True").first()[0]         
+         return df_result
+
+def check_MonthEnd_minus1():
+      HDFS_BASE = get_hdfs_base()
+      spark = create_spark_session("GLIF_PIPELINE", HDFS_BASE)
+      today = get_etl_date(spark)
+      
+      if isinstance(today, datetime.datetime):
+         today = today.date()
+         data = [(today,)]
+         columns = ["some_date"]
+         schema = T.StructType([
+            T.StructField("some_date", T.DateType(), True)
+         ])
+
+         df = spark.createDataFrame(data, schema=schema)
+         
+
+         df_result = df.withColumn("month_end_date", F.last_day(F.col("some_date")) - timedelta(days=1)).withColumn("monthend_True", col("some_date") == col("month_end_date"))
+
+         df_result = df_result.select("monthend_True").first()[0]
+         
+         return df_result
+
+
+def check_Previous_MonthEnd():
+    """
+    Returns previous month-end DATE (python date)
+    To be used for reading previous month-end files
+    """
+
+    HDFS_BASE = get_hdfs_base()
+    spark = create_spark_session("Previous_MonthEnd", HDFS_BASE)
+
+    etl_date = get_etl_date(spark)
+
+    # normalize datetime → date
+    if isinstance(etl_date, datetime.datetime):
+        etl_date = etl_date.date()
+
+    data = [(etl_date,)]
+    schema = T.StructType([
+        T.StructField("etl_date", T.DateType(), True)
+    ])
+
+    df = spark.createDataFrame(data, schema=schema)
+
+    df_result = (
+        df.withColumn(
+            "prev_month_end",
+            F.last_day(F.add_months(F.col("etl_date"), -1))
+        )
+    )
+
+    prev_month_end = df_result.select("prev_month_end").first()[0]
+    
+
+    return prev_month_end
+
+
+
+def check_year_end(spark):
+    today = get_etl_date(spark)
+    is_year_end = (today.month == 3 and today.day == 31)
+    print(f"{is_year_end} for the year-end")
+    if is_year_end:
+        return True
+    else:
+        return False
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# import datetime 
+# from pyspark.sql import SparkSession , functions as F
+# import pyspark.sql.types as T
+# from pyspark.sql.functions import to_date,expr, col,when, length, substring,trim, concat, lit, create_map, to_timestamp, sum,broadcast, coalesce
+# from datetime import date, timedelta
+
+# # =========== Common Methods =============================
+     
+# from common.dateUtil import get_etl_date
+# from common.processRun import get_run_id
+# from common.createSpark import create_spark_session
+# from common.fileUtil import get_hdfs_base
+# def check_monthend():
+#       HDFS_BASE = get_hdfs_base()
+#       spark = create_spark_session("GLIF_PIPELINE", HDFS_BASE)
+#       today = get_etl_date(spark)
+#       yesterday = today - timedelta(days=1)
+
+#       posting_date_str = today.strftime("%Y-%m-%d")
+#       RUN_ID = get_run_id(spark,posting_date_str)   
+
+
+#       if isinstance(today, datetime.datetime):
+#          today = today.date()
+#          data = [(today,)]
+#          columns = ["some_date"]
+#          schema = T.StructType([
+#             T.StructField("some_date", T.DateType(), True)
+#          ])
+
+#          df = spark.createDataFrame(data, schema=schema)
+#          df.show()
+
+#          df_result = df.withColumn("month_end_date", F.last_day(F.col("some_date"))).withColumn("monthend_True", col("some_date") == col("month_end_date"))
+
+#          df_result = df_result.select("monthend_True").first()[0]
+#          print(type(df_result))
+#          return df_result

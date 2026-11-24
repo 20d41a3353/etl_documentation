@@ -1,0 +1,60 @@
+from common.properties import get_oracle_properties, get_jdbc_url
+
+def get_process_id_by_name(spark, process_name):
+    """
+    Retrieve numeric PROCESS_ID from PROCESS_MASTER for a given process name.
+    Assumes table PROCESS_MASTER has columns PROCESS_ID (number) and PROCESS_NAME (varchar).
+    If you don't have this table, replace with a hardcoded mapping.
+    """
+    query = f"""
+        (SELECT PROCESS_ID 
+         FROM PROCESS_MASTER 
+         WHERE UPPER(PROCESS_NAME) = UPPER('{process_name}')
+        ) t
+    """
+    jdbc_url = get_jdbc_url()
+    oracle_properties = get_oracle_properties()
+    df = spark.read.jdbc(url=jdbc_url, table=query, properties=oracle_properties)
+    if df.count() == 0:
+        raise Exception(f"Process name '{process_name}' not found in PROCESS_MASTER")
+    return int(df.first()[0])
+
+# def get_process_run_id(spark, etl_date, process_name, airflow_run_id=None):
+#     """
+#     Returns a valid process run ID.
+#     - If airflow_run_id is provided and convertible to int > 0, use it.
+#     - Otherwise, fallback to the maximum PROCESS_RUN_ID from PROCESS_RUN_STAGE
+#       for the given process and ETL date. Returns 1 if none found.
+#     """
+#     # 1. Try Airflow-provided run_id
+#     if airflow_run_id is not None:
+#         try:
+#             run_id = int(airflow_run_id)
+#             if process_run_id > 0:
+#                 return process_run_id
+#         except (ValueError, TypeError):
+#             pass  # Invalid value, fallback to DB
+
+#     # 2. Fallback: query PROCESS_RUN_STAGE
+#     # Get numeric process ID
+#     process_id = get_process_id_by_name(spark, process_name)
+#     print("########################################################")
+#     print(f"Process Id:{process_id}")
+#     print("########################################################")
+#     # Query to get max PROCESS_RUN_ID for this process and date
+#     query = f"""
+#         (SELECT MAX(PRS.PROCESS_RUN_ID) AS RUN_ID
+#          FROM PROCESS_RUN_STAGE PRS
+#          JOIN PROCESS_RUN PR ON PRS.PROCESS_RUN_ID = PR.RUN_ID
+#          WHERE PR.PROCESS_ID = {process_id}
+#            AND TRUNC(PRS.START_TIME) = TO_DATE('{etl_date}', 'YYYY-MM-DD')
+#         ) t
+#     """
+#     jdbc_url = get_jdbc_url()
+#     oracle_properties = get_oracle_properties()
+#     df = spark.read.jdbc(url=jdbc_url, table=query, properties=oracle_properties)
+#     process_run_id = df.first()[0]
+#     if process_run_id is None:
+#         # No stage records for this date – start from 1
+#         return 1
+#     return int(process_run_id)
