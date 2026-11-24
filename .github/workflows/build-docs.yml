@@ -33,9 +33,10 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
       - name: Build HTML documentation
+        env:
+          PYTHONPATH: .
         run: |
-          # Replace './src' with your PySpark directory path
-          pdoc ./src -o ./_site
+          pdoc ./Scripts ./common -o ./_site
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
