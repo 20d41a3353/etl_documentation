@@ -73,12 +73,13 @@ jobs:
               return orig_open(file, mode, *args, **kwargs)
           builtins.open = safe_open
 
-          # 4. Script sys.argv arguments mock (pdoc arguments parse chesaka override chestham)
+          # 4. Script sys.argv & sys.exit mock (pdoc arguments parse chesaka override chestham)
           import pdoc.__main__, argparse
           orig_parse = argparse.ArgumentParser.parse_args
           def custom_parse(self, args=None, namespace=None):
               res = orig_parse(self, args, namespace)
               sys.argv = ['script.py', '1', '2026-01-01', '1', '1', '1', '1']
+              sys.exit = MagicMock()
               return res
           argparse.ArgumentParser.parse_args = custom_parse
 
