@@ -37,6 +37,26 @@ jobs:
           pip install pdoc pyspark delta-spark confluent-kafka
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
       - name: Build HTML documentation
         env:
           PYTHONPATH: .
@@ -45,17 +65,40 @@ jobs:
           from unittest.mock import MagicMock
           import pyspark, pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
 
-          pyspark.sql.SparkSession.builder = MagicMock()
-          pyspark.SparkContext._active_spark_context = MagicMock()
-          pyspark.SparkContext._jvm = MagicMock()
+          # 1. SparkSession mock (DataFrame collect/first/head returns valid date string)
+          mock_spark = MagicMock()
+          mock_df = mock_spark.builder.appName.return_value.config.return_value.getOrCreate.return_value
+          for target in (mock_spark.builder.getOrCreate.return_value, mock_spark.builder.appName.return_value.getOrCreate.return_value, mock_spark.builder.appName.return_value.enableHiveSupport.return_value.getOrCreate.return_value):
+              target.sql.return_value.collect.return_value = [['2026-01-01']]
+              target.sql.return_value.first.return_value = ['2026-01-01']
+              target.sql.return_value.head.return_value = ['2026-01-01']
+              target.read.format.return_value.load.return_value.collect.return_value = [['2026-01-01']]
+              target.read.format.return_value.load.return_value.first.return_value = ['2026-01-01']
+
+          # Generic fallback for any chained Spark builder calls
+          class SmartSparkMock(MagicMock):
+              def _get_child_mock(self, **kw):
+                  m = super()._get_child_mock(**kw)
+                  name = kw.get('name', '')
+                  if name == 'collect':
+                      m.return_value = [['2026-01-01']]
+                  elif name in ('first', 'head'):
+                      m.return_value = ['2026-01-01']
+                  return m
+
+          pyspark.sql.SparkSession.builder = SmartSparkMock()
+          pyspark.SparkContext._active_spark_context = SmartSparkMock()
+          pyspark.SparkContext._jvm = SmartSparkMock()
           py4j.java_gateway.java_import = MagicMock()
 
+          # 2. datetime.strptime mock
           class FakeDateTime(datetime.datetime):
               @classmethod
               def strptime(cls, date_string, format):
                   return datetime.datetime(2026, 1, 1)
           datetime.datetime = FakeDateTime
 
+          # 3. /app folder creation & log file writing mock
           orig_makedirs = os.makedirs
           def safe_makedirs(name, *args, **kwargs):
               if str(name).startswith('/app'):
@@ -70,6 +113,7 @@ jobs:
               return orig_open(file, mode, *args, **kwargs)
           builtins.open = safe_open
 
+          # 4. Script sys.argv & sys.exit mock
           import pdoc.__main__, argparse
           orig_parse = argparse.ArgumentParser.parse_args
           def custom_parse(self, args=None, namespace=None):
@@ -81,6 +125,18 @@ jobs:
 
           pdoc.__main__.cli()
           " ./Scripts ./common -o ./_site
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
