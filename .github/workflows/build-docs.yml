@@ -43,10 +43,12 @@ jobs:
         run: |
           python -c "
           from unittest.mock import MagicMock
-          import pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
+          import pyspark, pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
 
-          # 1. SparkSession & Py4J Java gateway mock
+          # 1. SparkSession, SparkContext & Py4J Java gateway mock
           pyspark.sql.SparkSession.builder = MagicMock()
+          pyspark.SparkContext._active_spark_context = MagicMock()
+          pyspark.SparkContext._jvm = MagicMock()
           py4j.java_gateway.java_import = MagicMock()
 
           # 2. datetime.strptime mock
@@ -82,6 +84,7 @@ jobs:
 
           pdoc.__main__.cli()
           " ./Scripts ./common -o ./_site
+
 
 
 
