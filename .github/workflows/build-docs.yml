@@ -1,0 +1,41 @@
+name: Build PySpark Documentation
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  generate-docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install pdoc pyspark
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Generate documentation for directory
+        run: |
+          # Replace 'src' with your PySpark folder name (or use '.' for root)
+          pdoc ./src -o ./docs
+
+      - name: Commit and push docs
+        run: |
+          git config --local user.email "github-actions[bot]@://github.com"
+          git config --local user.name "github-actions[bot]"
+          git add docs/
+          git commit -m "Update PySpark documentation" || echo "No doc changes"
+          git push
