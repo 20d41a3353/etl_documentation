@@ -29,20 +29,20 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install pdoc pyspark
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-          
-      - name: Install dependencies
-        run: |
           pip install pdoc pyspark delta-spark
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
-
 
       - name: Build HTML documentation
         env:
           PYTHONPATH: .
         run: |
-          pdoc ./Scripts ./common -o ./_site
+          python -c "
+          from unittest.mock import MagicMock
+          import pyspark.sql
+          pyspark.sql.SparkSession.builder = MagicMock()
+          from pdoc.__main__ import cli
+          cli()
+          " ./Scripts ./common -o ./_site
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v3
