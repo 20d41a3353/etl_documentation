@@ -38,16 +38,37 @@ jobs:
         run: |
           python -c "
           from unittest.mock import MagicMock
-          import pyspark.sql, datetime
+          import pyspark.sql, datetime, os, builtins
+
+          # 1. SparkSession mock
           pyspark.sql.SparkSession.builder = MagicMock()
+
+          # 2. datetime.strptime mock
           class FakeDateTime(datetime.datetime):
               @classmethod
               def strptime(cls, date_string, format):
                   return datetime.datetime(2026, 1, 1)
           datetime.datetime = FakeDateTime
+
+          # 3. /app lanti folder creation & log file writing mock
+          orig_makedirs = os.makedirs
+          def safe_makedirs(name, *args, **kwargs):
+              if str(name).startswith('/app'):
+                  return
+              return orig_makedirs(name, *args, **kwargs)
+          os.makedirs = safe_makedirs
+
+          orig_open = builtins.open
+          def safe_open(file, mode='r', *args, **kwargs):
+              if str(file).startswith('/app') and any(m in mode for m in ('w', 'a', 'x')):
+                  return MagicMock()
+              return orig_open(file, mode, *args, **kwargs)
+          builtins.open = safe_open
+
           from pdoc.__main__ import cli
           cli()
           " ./Scripts ./common -o ./_site
+
 
 
       - name: Upload Pages artifact
