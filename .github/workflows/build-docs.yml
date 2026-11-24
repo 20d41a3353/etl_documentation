@@ -64,21 +64,31 @@ jobs:
           from unittest.mock import MagicMock
           import pyspark, pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
 
-          # 1. Hybrid Date+Int object (works both as datetime.date and int())
+          # 1. Hybrid Date+Int object & FakeRow (supports both row[0] and row['COL_NAME'])
           class DateAndInt(datetime.date):
               def __int__(self):
                   return 1
 
           sample_val = DateAndInt(2026, 1, 1)
 
+          class FakeRow(list):
+              def __getitem__(self, key):
+                  if isinstance(key, str):
+                      return sample_val
+                  return super().__getitem__(key)
+              def __getattr__(self, name):
+                  return sample_val
+
+          fake_row = FakeRow([sample_val])
+
           class SmartSparkMock(MagicMock):
               def _get_child_mock(self, **kw):
                   m = super()._get_child_mock(**kw)
                   name = kw.get('name', '')
                   if name == 'collect':
-                      m.return_value = [[sample_val]]
+                      m.return_value = [fake_row]
                   elif name in ('first', 'head'):
-                      m.return_value = [sample_val]
+                      m.return_value = fake_row
                   return m
 
           pyspark.sql.SparkSession.builder = SmartSparkMock()
@@ -108,18 +118,21 @@ jobs:
               return orig_open(file, mode, *args, **kwargs)
           builtins.open = safe_open
 
-          # 4. Script sys.argv & sys.exit mock
+          # 4. Script sys.argv, sys.exit & exit() mock
           import pdoc.__main__, argparse
           orig_parse = argparse.ArgumentParser.parse_args
           def custom_parse(self, args=None, namespace=None):
               res = orig_parse(self, args, namespace)
               sys.argv = ['script.py', '1', '2026-01-01', '1', '1', '1', '1']
               sys.exit = MagicMock()
+              builtins.exit = MagicMock()
+              builtins.quit = MagicMock()
               return res
           argparse.ArgumentParser.parse_args = custom_parse
 
           pdoc.__main__.cli()
           " ./Scripts ./common -o ./_site
+
 
 
 
