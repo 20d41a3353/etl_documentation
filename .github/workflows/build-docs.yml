@@ -1,4 +1,4 @@
-name: Build PySpark Documentation
+name: Deploy PySpark Docs to GitHub Pages
 
 on:
   workflow_dispatch:
@@ -7,12 +7,17 @@ on:
       - main
 
 permissions:
-  contents: write
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
 
 jobs:
-  generate-docs:
+  build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -27,15 +32,23 @@ jobs:
           pip install pdoc pyspark
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
-      - name: Generate documentation for directory
+      - name: Build HTML documentation
         run: |
-          # Replace 'src' with your PySpark folder name (or use '.' for root)
-          pdoc ./src -o ./docs
+          # Replace './src' with your PySpark directory path
+          pdoc ./src -o ./_site
 
-      - name: Commit and push docs
-        run: |
-          git config --local user.email "github-actions[bot]@://github.com"
-          git config --local user.name "github-actions[bot]"
-          git add docs/
-          git commit -m "Update PySpark documentation" || echo "No doc changes"
-          git push
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ./_site
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
