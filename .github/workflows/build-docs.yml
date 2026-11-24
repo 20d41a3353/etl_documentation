@@ -45,20 +45,17 @@ jobs:
           from unittest.mock import MagicMock
           import pyspark, pyspark.sql, datetime, os, sys, builtins, py4j.java_gateway
 
-          # 1. SparkSession, SparkContext & Py4J Java gateway mock
           pyspark.sql.SparkSession.builder = MagicMock()
           pyspark.SparkContext._active_spark_context = MagicMock()
           pyspark.SparkContext._jvm = MagicMock()
           py4j.java_gateway.java_import = MagicMock()
 
-          # 2. datetime.strptime mock
           class FakeDateTime(datetime.datetime):
               @classmethod
               def strptime(cls, date_string, format):
                   return datetime.datetime(2026, 1, 1)
           datetime.datetime = FakeDateTime
 
-          # 3. /app folder creation & log file writing mock
           orig_makedirs = os.makedirs
           def safe_makedirs(name, *args, **kwargs):
               if str(name).startswith('/app'):
@@ -73,7 +70,6 @@ jobs:
               return orig_open(file, mode, *args, **kwargs)
           builtins.open = safe_open
 
-          # 4. Script sys.argv & sys.exit mock (pdoc arguments parse chesaka override chestham)
           import pdoc.__main__, argparse
           orig_parse = argparse.ArgumentParser.parse_args
           def custom_parse(self, args=None, namespace=None):
