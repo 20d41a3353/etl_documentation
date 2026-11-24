@@ -31,6 +31,12 @@ jobs:
         run: |
           pip install pdoc pyspark
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          
+      - name: Install dependencies
+        run: |
+          pip install pdoc pyspark delta-spark
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
 
       - name: Build HTML documentation
         env:
