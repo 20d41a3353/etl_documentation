@@ -33,23 +33,54 @@ jobs:
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
 
 
-      - name: Auto-generate Dependency, Data-Flow & UML Diagrams
+      - name: Auto-generate Dependency, Data-Flow, UML & ER Diagrams
         env:
           PYTHONPATH: .
         run: |
           # 1. Generate UML Class & Package Mermaid diagrams via pyreverse
           pyreverse -o mmd -p ETL_Project ./Scripts ./common || true
 
-          # 2. Scan Scripts & common using Python AST to build Mermaid Flowcharts in Scripts/__init__.py
+          # 2. Scan Scripts & common using Python AST + Regex for Flowcharts, Lineage & ER Diagrams
           python -c '
           import ast, re
           from pathlib import Path
 
           scripts_dir = Path("Scripts")
+          common_dir = Path("common")
 
           dep_edges = set()
           io_edges = set()
           script_summaries = []
+          er_entities = {}
+          er_relations = set()
+
+          all_py_files = sorted(scripts_dir.glob("*.py")) + sorted(common_dir.glob("*.py"))
+
+          # Scan all files for StructType schemas & CREATE TABLE DDLs to build ER entities
+          for py_file in all_py_files:
+              if py_file.name == "__init__.py":
+                  continue
+              source = py_file.read_text(encoding="utf-8", errors="ignore")
+
+              # Match schema_name = StructType([StructField("col", Type(), ...)])
+              for m in re.finditer(r"([a-zA-Z0-9_]+)\s*=\s*StructType\(\s*\[(.*?)\]\s*\)", source, re.S):
+                  ent_name = m.group(1).upper()
+                  body = m.group(2)
+                  fields = re.findall(r"StructField\(\s*[\"\x27]([^\"\x27]+)[\"\x27]\s*,\s*([a-zA-Z0-9_]+)", body)
+                  if fields:
+                      er_entities.setdefault(ent_name, []).extend(fields)
+
+              # Match CREATE TABLE [IF NOT EXISTS] db.table (col1 type1, col2 type2)
+              for m in re.finditer(r"CREATE\s+(?:EXTERNAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?([a-zA-Z0-9_.]+)\s*\((.*?)\)", source, re.I | re.S):
+                  ent_name = re.sub(r"[^a-zA-Z0-9_]", "_", m.group(1)).upper()
+                  cols_raw = m.group(2).split(",")
+                  fields = []
+                  for c in cols_raw:
+                      parts = c.strip().split()
+                      if len(parts) >= 2 and not parts[0].upper() in ("PRIMARY", "FOREIGN", "CONSTRAINT", "USING", "PARTITIONED"):
+                          fields.append((re.sub(r"[^a-zA-Z0-9_]", "", parts[0]), re.sub(r"[^a-zA-Z0-9_]", "", parts[1])))
+                  if fields:
+                      er_entities.setdefault(ent_name, []).extend(fields)
 
           for py_file in sorted(scripts_dir.glob("*.py")):
               if py_file.name == "__init__.py":
@@ -78,17 +109,57 @@ jobs:
               reads = set(re.findall(r"(?:spark\.table|spark\.read\.[^(]+\(|DeltaTable\.forName\([^,]+,\s*)[\"\x27]([^\"\x27]+)[\"\x27]", source))
               writes = set(re.findall(r"(?:saveAsTable|insertInto|\.save|\.parquet|\.csv|\.delta)\([\"\x27]([^\"\x27]+)[\"\x27]", source))
 
+              clean_reads = []
               for r in reads:
-                  clean_r = re.sub(r"[^a-zA-Z0-9_]", "_", r)[:30]
+                  clean_r = re.sub(r"[^a-zA-Z0-9_]", "_", r).upper()[:30]
+                  clean_reads.append(clean_r)
                   io_edges.add(f"    SRC_{clean_r}[(\"{r}\")] -->|Read| {mod_name}[{mod_name}]")
+                  er_entities.setdefault(clean_r, [])
+
               for w in writes:
-                  clean_w = re.sub(r"[^a-zA-Z0-9_]", "_", w)[:30]
+                  clean_w = re.sub(r"[^a-zA-Z0-9_]", "_", w).upper()[:30]
                   io_edges.add(f"    {mod_name}[{mod_name}] -->|Write| TGT_{clean_w}[(\"{w}\")]")
+                  er_entities.setdefault(clean_w, [])
+                  for cr in clean_reads:
+                      if cr != clean_w:
+                          er_relations.add(f"    {cr} ||--o{{ {clean_w} : \"{mod_name}\"")
 
               funcs = [n.name for n in tree.body if isinstance(n, ast.FunctionDef)]
               commons_str = ", ".join(sorted(used_commons)) or "-"
               funcs_str = ", ".join(funcs) or "Top-level ETL"
               script_summaries.append(f"| `{py_file.name}` | {commons_str} | {funcs_str} |")
+
+          # Build ER Diagram Mermaid lines
+          er_lines = ["erDiagram"]
+          for ent, cols in sorted(er_entities.items())[:25]:
+              seen = set()
+              unique_cols = []
+              for cname, ctype in cols:
+                  if cname not in seen:
+                      seen.add(cname)
+                      unique_cols.append((cname, ctype))
+              if unique_cols:
+                  er_lines.append(f"    {ent} {{")
+                  for cname, ctype in unique_cols[:15]:
+                      er_lines.append(f"        {ctype} {cname}")
+                  er_lines.append("    }")
+              else:
+                  er_lines.append(f"    {ent}")
+
+          if er_relations:
+              er_lines.extend(sorted(er_relations)[:30])
+          elif len(er_entities) == 0:
+              er_lines.extend([
+                  "    SOURCE_TABLE ||--o{ TARGET_DELTA_TABLE : transforms",
+                  "    SOURCE_TABLE {",
+                  "        string id",
+                  "        date etl_date",
+                  "    }",
+                  "    TARGET_DELTA_TABLE {",
+                  "        string id",
+                  "        double amount",
+                  "    }"
+              ])
 
           uml_classes = Path("classes_ETL_Project.mmd").read_text(encoding="utf-8") if Path("classes_ETL_Project.mmd").exists() else ""
 
@@ -112,12 +183,17 @@ jobs:
               "flowchart LR",
               *(sorted(io_edges) or ["    Source[(Data Source)] --> ETL[PySpark Scripts] --> Target[(Data Lake)]"]),
               "```",
+              "",
+              "## 4. Entity-Relationship (ER) Diagram",
+              "```mermaid",
+              *er_lines,
+              "```",
           ]
 
           if uml_classes.strip():
               doc_lines += [
                   "",
-                  "## 4. UML Class Diagram",
+                  "## 5. UML Class Diagram",
                   "```mermaid",
                   uml_classes.strip(),
                   "```",
@@ -127,6 +203,7 @@ jobs:
           existing = (scripts_dir / "__init__.py").read_text(encoding="utf-8") if (scripts_dir / "__init__.py").exists() else ""
           (scripts_dir / "__init__.py").write_text("\n".join(doc_lines) + "\n" + existing, encoding="utf-8")
           '
+
 
       - name: Build HTML documentation
         env:
